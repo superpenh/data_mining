@@ -10,7 +10,7 @@ def parse_purchase_history(df):
     if 'purchase_history' not in df.columns:
         return df
 
-    print("解析JSON字段...")
+    print("解析purchase_history JSON字段...")
 
     # Create a function to parse a single JSON string
     def parse_json(json_str):
@@ -19,9 +19,9 @@ def parse_purchase_history(df):
         try:
             data = json.loads(json_str)
             return (
-                data.get('category'),
+                data.get('categories'),
                 len(data.get('items', [])),
-                data.get('average_price')
+                data.get('avg_price')
             )
         except:
             return None, None, None
@@ -30,12 +30,45 @@ def parse_purchase_history(df):
     parsed_data = df['purchase_history'].apply(parse_json)
 
     # Create new columns from the parsed results
-    df['purchase_category'], df['purchase_items_count'], df['average_purchase_price'] = zip(*parsed_data)
+    df['purchase_category'], df['purchase_items_count'], df['avg_price'] = zip(*parsed_data)
 
     # Drop the original JSON column
     df = df.drop(columns=['purchase_history'])
 
     return df
+
+
+def parse_login_history(df):
+    """Efficiently parse login_history JSON column"""
+    if 'login_history' not in df.columns:
+        return df
+
+    print("解析login_history JSON字段...")
+
+    # Create a function to parse a single JSON string
+    def parse_json(json_str):
+        if pd.isna(json_str):
+            return None, None
+        try:
+            data = json.loads(json_str)
+            return (
+                data.get('avg_session_duration'),
+                data.get('login_count')
+            )
+        except:
+            return None, None
+
+    # Apply function to the entire column at once (vectorized)
+    parsed_data = df['login_history'].apply(parse_json)
+
+    # Create new columns from the parsed results
+    df['avg_session_duration'], df['login_count'] = zip(*parsed_data)
+
+    # Drop the original JSON column
+    df = df.drop(columns=['login_history'])
+
+    return df
+
 
 def load_data(data_dir, dtype=None):
     """
@@ -56,13 +89,13 @@ def load_data(data_dir, dtype=None):
         dtype = {
             'id': 'int32',
             'user_name': 'category',
-            'chinese_name': 'category',
+            'fullname': 'category',
             'email': 'category',
             'age': 'int32',  # 不再使用int8来避免潜在的溢出问题
             'income': 'int64',  # 使用更大的整数类型
             'gender': 'category',
             'country': 'category',
-            'chinese_address': 'category',
+            'address': 'category',
             'is_active': 'bool',
             'credit_score': 'int32',  # 不再使用int16
             'phone_number': 'category'
@@ -86,7 +119,7 @@ def load_data(data_dir, dtype=None):
             })
 
             print('开始数据类型转换...')
-            chinese_columns = ['chinese_name', 'chinese_address']
+            chinese_columns = ['fullname', 'address']
             for col in chinese_columns:
                 if col in df.columns:
                     df[col] = df[col].astype(str)
@@ -102,8 +135,9 @@ def load_data(data_dir, dtype=None):
                         except:
                             pass  # 如果转换失败，保留原始类型
 
-
+            # 解析JSON字段
             df = parse_purchase_history(df)
+            df = parse_login_history(df)  # 添加对login_history的解析
             all_dfs.append(df)
 
         except Exception as e:
@@ -125,7 +159,7 @@ def load_data(data_dir, dtype=None):
 
 def identify_high_value_users(df, output_file='high_value_users.csv'):
     """
-    识别高价值用户
+    识别高价值用户 - 使用login_history中的数据代替credit_score
     """
     print(f"开始高价值用户分析，数据集有 {len(df)} 行")
 
@@ -133,27 +167,34 @@ def identify_high_value_users(df, output_file='high_value_users.csv'):
     print("计算高价值用户阈值...")
     thresholds = {
         'income': df['income'].mean(),
-        'credit_score': df['credit_score'].mean(),
+        'avg_session_duration': df['avg_session_duration'].mean() if 'avg_session_duration' in df.columns else 0,
+        'login_count': df['login_count'].mean() if 'login_count' in df.columns else 0,
         'purchase_items_count': df['purchase_items_count'].mean() if 'purchase_items_count' in df.columns else 0,
-        'average_purchase_price': df['average_purchase_price'].mean() if 'average_purchase_price' in df.columns else 0
+        'avg_price': df['avg_price'].mean() if 'avg_price' in df.columns else 0
     }
 
     print(f"计算得到的阈值: {thresholds}")
 
-    # 筛选高价值用户
+    # 筛选高价值用户 - 不再使用credit_score
     print("开始筛选高价值用户...")
     conditions = [
-        df['income'] > thresholds['income'],
-        df['credit_score'] > thresholds['credit_score']
+        df['income'] > thresholds['income']
     ]
+
+    # 添加avg_session_duration和login_count条件
+    if 'avg_session_duration' in df.columns:
+        conditions.append(df['avg_session_duration'] > thresholds['avg_session_duration'])
+
+    if 'login_count' in df.columns:
+        conditions.append(df['login_count'] > thresholds['login_count'])
 
     # 只有当purchase_items_count列存在时才添加该条件
     if 'purchase_items_count' in df.columns:
         conditions.append(df['purchase_items_count'] > thresholds['purchase_items_count'])
 
     # 添加average_purchase_price条件
-    if 'average_purchase_price' in df.columns:
-        conditions.append(df['average_purchase_price'] > thresholds['average_purchase_price'])
+    if 'avg_price' in df.columns:
+        conditions.append(df['avg_price'] > thresholds['avg_price'])
 
     high_value_users = df[np.logical_and.reduce(conditions)]
 
@@ -169,7 +210,7 @@ def identify_high_value_users(df, output_file='high_value_users.csv'):
         output_path.parent.mkdir(exist_ok=True)
 
         # 删除敏感信息列
-        columns_to_exclude = ['chinese_name', 'email', 'chinese_address']
+        columns_to_exclude = ['fullname', 'email', 'address']
         filtered_df = high_value_users.drop(
             columns=[col for col in columns_to_exclude if col in high_value_users.columns])
 
@@ -179,11 +220,16 @@ def identify_high_value_users(df, output_file='high_value_users.csv'):
 
     # 计算高价值用户特征统计
     if high_value_count > 0:
-        numeric_cols = ['age', 'income', 'credit_score']
+        numeric_cols = ['age', 'income']
+        # 添加新的评估指标
+        if 'avg_session_duration' in df.columns:
+            numeric_cols.append('avg_session_duration')
+        if 'login_count' in df.columns:
+            numeric_cols.append('login_count')
         if 'purchase_items_count' in df.columns:
             numeric_cols.append('purchase_items_count')
-        if 'average_purchase_price' in df.columns:
-            numeric_cols.append('average_purchase_price')
+        if 'avg_price' in df.columns:
+            numeric_cols.append('avg_price')
 
         hvu_stats = high_value_users[numeric_cols].describe()
     else:
@@ -222,13 +268,14 @@ def generate_high_value_report(result, output_dir):
             f.write(result['high_value_stats'].to_string())
 
 
-
 def main():
     import argparse
     import sys
 
     parser = argparse.ArgumentParser(description='大数据用户分析程序')
-    parser.add_argument('--data-dir', type=str, default='/home/pengxiao/virtualenvs/shujuwajue/data_quality_assessment/results', help='包含parquet文件的目录路径')
+    parser.add_argument('--data-dir', type=str,
+                        default='/home/pengxiao/virtualenvs/shujuwajue/30G_new_data',
+                        help='包含parquet文件的目录路径')
     parser.add_argument('--output-dir', type=str, default='select_results', help='结果输出目录')
 
     args = parser.parse_args()
@@ -261,6 +308,7 @@ def main():
 
 if __name__ == '__main__':
     import time
+
     start_time = time.time()
 
     main()

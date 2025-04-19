@@ -56,7 +56,7 @@ def check_duplicates(df):
     检查重复行
     """
     # 检查完全重复的行
-    duplicates =df.duplicated(subset=['user_name', 'chinese_name', 'email'])
+    duplicates = df.duplicated(subset=['user_name', 'fullname', 'email'])
     duplicate_rows = df[duplicates]
 
     # 计算重复行数量和比例
@@ -109,25 +109,6 @@ def check_inconsistent_data(df):
     """
     consistency_issues = {}
 
-    # 检查日期格式一致性（针对timestamp和registration_date列）
-    date_columns = ['timestamp', 'registration_date']
-    for col in date_columns:
-        if col in df.columns:
-            invalid_dates = 0
-            for date_str in df[col]:
-                if pd.isna(date_str):
-                    continue
-                try:
-                    # 尝试解析日期字符串
-                    pd.to_datetime(date_str)
-                except:
-                    invalid_dates += 1
-
-            consistency_issues[f'{col}_invalid_format'] = {
-                '无效日期数量': invalid_dates,
-                '无效日期比例(%)': (invalid_dates / len(df)) * 100
-            }
-
     # 检查年龄合理性
     if 'age' in df.columns:
         invalid_ages = len(df[(df['age'] < 0) | (df['age'] > 120)])
@@ -135,7 +116,6 @@ def check_inconsistent_data(df):
             '无效年龄数量': invalid_ages,
             '无效年龄比例(%)': (invalid_ages / len(df)) * 100
         }
-
     # 检查性别值一致性
     if 'gender' in df.columns:
         gender_values = df['gender'].dropna().unique()
@@ -143,7 +123,6 @@ def check_inconsistent_data(df):
             '不同性别值': list(gender_values),
             '唯一值数量': len(gender_values)
         }
-
     # 检查电子邮件格式
     if 'email' in df.columns:
         # 简单的电子邮件格式检查 - 包含@符号
@@ -152,8 +131,31 @@ def check_inconsistent_data(df):
             '无效邮箱数量': invalid_emails,
             '无效邮箱比例(%)': (invalid_emails / len(df)) * 100
         }
+    # 检查JSON字段的格式 - login_history字段的检查
+    if 'login_history' in df.columns:
+        invalid_json = 0
 
-    # 检查JSON字段的格式
+        for json_str in df['login_history']:
+            if pd.isna(json_str):
+                continue
+
+            try:
+                if isinstance(json_str, str):
+                    data = json.loads(json_str)
+                elif isinstance(json_str, dict):
+                    data = json_str
+                else:
+                    invalid_json += 1
+                    continue
+
+            except:
+                invalid_json += 1
+
+        consistency_issues['invalid_login_history'] = {
+            '无效JSON数量': invalid_json,
+            '无效JSON比例(%)': (invalid_json / len(df)) * 100
+        }
+    # 检查purchase_history字段的格式
     if 'purchase_history' in df.columns:
         invalid_json = 0
         for json_str in df['purchase_history']:
@@ -173,8 +175,7 @@ def check_inconsistent_data(df):
     return consistency_issues
 
 
-
-def preprocess_data(df, missing_threshold=0.5):
+def preprocess_data(df, missing_threshold=0.1):
     """
     数据预处理
     """
@@ -185,27 +186,60 @@ def preprocess_data(df, missing_threshold=0.5):
     # 创建副本以避免修改原始数据
     processed_df = df.copy()
 
+    # 记录是否有数据被删除的标志
+    data_deleted = False
+
     # 1. 处理重复行
     print("正在处理重复行...")
     before_dedup = len(processed_df)
-    processed_df = processed_df.drop_duplicates()
+    processed_df = processed_df.drop_duplicates(subset=['user_name', 'fullname', 'email'])
     after_dedup = len(processed_df)
     if before_dedup > after_dedup:
+        data_deleted = True
         processing_log.append(
-            f"删除了 {before_dedup - after_dedup} 行重复数据 ({(before_dedup - after_dedup) / before_dedup:.2%})")
+            f"删除了 {before_dedup - after_dedup} 行重复数据 ({(before_dedup - after_dedup) / before_dedup:.2%})，原因：这些行基于user_name、fullname和email字段完全重复")
 
     # 2. 删除缺失值过多的列
     print("正在处理缺失值...")
-    missing_stats = processed_df.isnull().mean()
-    cols_to_drop = missing_stats[missing_stats > missing_threshold].index.tolist()
+    missing_stats = processed_df.isnull().sum()
+    missing_percent = missing_stats / len(processed_df)
+    cols_to_drop = missing_percent[missing_percent > missing_threshold].index.tolist()
     if cols_to_drop:
+        data_deleted = True
         processed_df = processed_df.drop(columns=cols_to_drop)
         processing_log.append(
-            f"删除了 {len(cols_to_drop)} 列，因为它们的缺失值比例超过 {missing_threshold:.0%}: {', '.join(cols_to_drop)}")
+            f"删除了 {len(cols_to_drop)} 列，原因：它们的缺失值比例超过 {missing_threshold:.0%}。被删除的列: {', '.join(cols_to_drop)}")
 
-    # 3. 处理日期列
+    # 3. 删除income、login_history和purchase_history缺失值的行
+    target_columns = []
+
+    if 'income' in processed_df.columns:
+        target_columns.append('income')
+
+    if 'login_history' in processed_df.columns:
+        target_columns.append('login_history')
+
+    if 'purchase_history' in processed_df.columns:
+        target_columns.append('purchase_history')
+
+    if target_columns:
+        print(f"正在删除 {', '.join(target_columns)} 列中有缺失值的行...")
+        rows_before = len(processed_df)
+
+        for col in target_columns:
+            missing_counts = processed_df[col].isnull().sum()
+            if missing_counts > 0:
+                processed_df = processed_df.dropna(subset=[col])
+                processing_log.append(f"删除了 {missing_counts} 行，原因：'{col}' 列中存在缺失值")
+                data_deleted = True
+
+        rows_after = len(processed_df)
+        if rows_before > rows_after:
+            processing_log.append(f"总共删除了 {rows_before - rows_after} 行，原因：指定列中存在缺失值")
+
+    # 4. 处理日期列
     print("正在处理日期列...")
-    date_columns = ['timestamp', 'registration_date']
+    date_columns = ['last_login', 'registration_date']
     for col in date_columns:
         if col in processed_df.columns:
             processed_df[col] = pd.to_datetime(processed_df[col], errors='coerce')
@@ -213,9 +247,9 @@ def preprocess_data(df, missing_threshold=0.5):
             if null_dates_after > 0:
                 processing_log.append(f"列 '{col}' 中有 {null_dates_after} 个无效日期值被转换为NaT")
 
-    # 4. 处理数值列中的异常值
+    # 5. 处理数值列中的异常值
     print("正在处理数值列中的异常值...")
-    numeric_cols = ['age', 'income', 'credit_score']
+    numeric_cols = ['age', 'income']
     for col in numeric_cols:
         if col not in processed_df.columns:
             continue
@@ -228,32 +262,21 @@ def preprocess_data(df, missing_threshold=0.5):
         upper_bound = Q3 + 1.5 * IQR
 
         # 统计并将异常值替换为NaN
-        outliers_count = ((processed_df[col] < lower_bound) | (processed_df[col] > upper_bound)).sum()
+        outliers_mask = (processed_df[col] < lower_bound) | (processed_df[col] > upper_bound)
+        outliers_count = outliers_mask.sum()
         if outliers_count > 0:
-            processed_df.loc[(processed_df[col] < lower_bound) | (processed_df[col] > upper_bound), col] = np.nan
+            processed_df.loc[outliers_mask, col] = np.nan
             processing_log.append(
-                f"列 '{col}' 中有 {outliers_count} 个异常值 ({outliers_count / len(processed_df):.2%}) 被替换为NaN")
+                f"列 '{col}' 中有 {outliers_count} 个异常值 ({outliers_count / len(processed_df):.2%}) 被替换为NaN，异常值范围：小于 {lower_bound:.2f} 或大于 {upper_bound:.2f}")
 
-
-    # 5. 根据需要填充缺失值
-    # 对数值列使用中位数填充
-    print("正在填充缺失值...")
-    for col in processed_df.select_dtypes(include=np.number).columns:
-        null_count = processed_df[col].isnull().sum()
-        if null_count > 0:
-            median_value = processed_df[col].median()
-            processed_df[col].fillna(median_value, inplace=True)
-            processing_log.append(f"列 '{col}' 中的 {null_count} 个缺失值使用中位数 {median_value} 填充")
-
-    # 对分类列使用众数填充
-    for col in ['gender', 'country']:
-        if col in processed_df.columns:
-            null_count = processed_df[col].isnull().sum()
-            if null_count > 0:
-                mode_value = processed_df[col].mode()[0]
-                processed_df[col].fillna(mode_value, inplace=True)
-                processing_log.append(f"列 '{col}' 中的 {null_count} 个缺失值使用众数 '{mode_value}' 填充")
-
+            # 如果是income列的异常值，需要删除这些行
+            if col == 'income':
+                rows_before = len(processed_df)
+                processed_df = processed_df.dropna(subset=['income'])
+                rows_deleted = rows_before - len(processed_df)
+                if rows_deleted > 0:
+                    processing_log.append(f"删除了 {rows_deleted} 行，原因：'income' 列中检测到异常值后转为NaN")
+                    data_deleted = True
 
     final_shape = processed_df.shape
     processing_log.append(f"最终数据形状: {final_shape}")
@@ -262,7 +285,7 @@ def preprocess_data(df, missing_threshold=0.5):
     processing_log.append(
         f"列数变化: {original_shape[1]} -> {final_shape[1]} ({(final_shape[1] - original_shape[1]) / original_shape[1]:.2%})")
 
-    return processed_df, processing_log
+    return processed_df, processing_log, data_deleted
 
 
 def analyze_data_quality(df):
@@ -279,169 +302,139 @@ def analyze_data_quality(df):
     }
     # 检查缺失值
     results["missing_values"] = check_missing_values(df).to_dict()
-
     # 检查重复行
     dup_count, dup_percentage, _ = check_duplicates(df)
     results["duplicates"] = {
         "duplicate_rows": dup_count,
         "duplicate_percentage": dup_percentage
     }
-
     # 检查数值列中的异常值
-    numeric_columns = ['age', 'income', 'credit_score']
+    numeric_columns = ['age', 'income']
     results["outliers"] = check_outliers(df, numeric_columns)
+    # 检查数据一致性问题
+    results["consistency_issues"] = check_inconsistent_data(df)
 
     return results
 
 
-def generate_statistics_report(df):
+def generate_data_quality_report(analysis_results):
     """
-    生成详细的数据统计报告
+    生成数据质量报告
     """
     report = []
     report.append("=" * 80)
-    report.append("数据统计报告")
+    report.append("数据质量评估报告")
     report.append("=" * 80)
 
     # 基本信息
+    basic_info = analysis_results["basic_info"]
     report.append("\n1. 基本信息")
-    report.append(f"- 行数: {len(df)}")
-    report.append(f"- 列数: {len(df.columns)}")
-    report.append(f"- 列名: {', '.join(df.columns)}")
+    report.append(f"- 行数: {basic_info['rows']}")
+    report.append(f"- 列数: {basic_info['columns']}")
+    report.append(f"- 列名: {', '.join(basic_info['column_names'])}")
 
-    # 数据类型
-    report.append("\n2. 数据类型")
-    for col, dtype in df.dtypes.items():
-        report.append(f"- {col}: {dtype}")
+    report.append("\n2. 缺失值问题")
+    # Check if any columns have missing values by seeing if any inner dictionaries have content
+    has_missing_values = False
+    for col, stats in analysis_results["missing_values"].items():
+        if stats and ('缺失值数量' in stats) and stats['缺失值数量'] > 0:
+            has_missing_values = True
+            missing_count = stats['缺失值数量']
+            missing_percent = stats['缺失值比例(%)']
+            report.append(f"- 列 '{col}': {missing_count} 行缺失 ({missing_percent:.2f}%)")
 
+    if not has_missing_values:
+        report.append("- 未发现缺失值问题")
 
-    # 缺失值统计
-    report.append("\n3. 缺失值统计")
-    missing_stats = df.isnull().sum().sort_values(ascending=False)
-    missing_percent = (missing_stats / len(df) * 100).round(2)
-    for col, count in missing_stats.items():
-        if count > 0:
-            report.append(f"- {col}: {count} 行 ({missing_percent[col]}%)")
+    # 重复值问题
+    report.append("\n3. 重复行问题")
+    dup_count = analysis_results["duplicates"]["duplicate_rows"]
+    dup_percent = analysis_results["duplicates"]["duplicate_percentage"]
+    if dup_count > 0:
+        report.append(f"- 发现 {dup_count} 行重复数据 ({dup_percent:.2f}%)")
+    else:
+        report.append("- 未发现重复行问题")
 
+    # 异常值问题
+    report.append("\n4. 异常值问题")
+    if analysis_results["outliers"]:
+        for col, stats in analysis_results["outliers"].items():
+            outlier_count = stats['异常值数量']
+            outlier_percent = stats['异常值比例(%)']
+            if outlier_count > 0:
+                report.append(f"- 列 '{col}': {outlier_count} 个异常值 ({outlier_percent:.2f}%)")
+                report.append(f"  异常值界限: 小于 {stats['下界']:.2f} 或大于 {stats['上界']:.2f}")
+    else:
+        report.append("- 未发现异常值问题")
 
-    # 重复行统计
-    dup_count = df.duplicated().sum()
-    dup_percent = (dup_count / len(df) * 100).round(2)
-    report.append(f"\n4. 重复行: {dup_count} 行 ({dup_percent}%)")
+    # 数据一致性问题
+    report.append("\n5. 数据一致性问题")
+    consistency_issues = analysis_results.get("consistency_issues", {})
+    if consistency_issues:
+        # 日期格式问题
+        for key, value in consistency_issues.items():
+            if key.endswith('_invalid_format') and '无效日期数量' in value:
+                col = key.replace('_invalid_format', '')
+                count = value['无效日期数量']
+                percent = value['无效日期比例(%)']
+                if count > 0:
+                    report.append(f"- 列 '{col}': {count} 个无效日期格式 ({percent:.2f}%)")
 
+            # 年龄问题
+            if key == 'invalid_ages':
+                count = value['无效年龄数量']
+                percent = value['无效年龄比例(%)']
+                if count > 0:
+                    report.append(f"- 年龄列: {count} 个无效值 ({percent:.2f}%), 有效范围应为0-120岁")
 
-    # 数值列统计
-    report.append("\n5. 数值列统计")
-    numeric_cols = df.select_dtypes(include=np.number).columns
-    for col in numeric_cols:
-        stats = df[col].describe()
-        report.append(f"\n  {col}:")
-        report.append(f"  - 计数: {stats['count']}")
-        report.append(f"  - 均值: {stats['mean']:.2f}")
-        report.append(f"  - 标准差: {stats['std']:.2f}")
-        report.append(f"  - 最小值: {stats['min']:.2f}")
-        report.append(f"  - 25%分位: {stats['25%']:.2f}")
-        report.append(f"  - 中位数: {stats['50%']:.2f}")
-        report.append(f"  - 75%分位: {stats['75%']:.2f}")
-        report.append(f"  - 最大值: {stats['max']:.2f}")
+            # 性别值问题
+            if key == 'gender_values':
+                values = value['不同性别值']
+                report.append(f"- 性别列: 包含 {len(values)} 种不同的值: {', '.join(map(str, values))}")
 
-        # 计算异常值
-        Q1 = stats['25%']
-        Q3 = stats['75%']
-        IQR = Q3 - Q1
-        lower_bound = Q1 - 1.5 * IQR
-        upper_bound = Q3 + 1.5 * IQR
-        outliers = df[(df[col] < lower_bound) | (df[col] > upper_bound)]
-        outlier_count = len(outliers)
-        outlier_percent = round((outlier_count / len(df) * 100), 2)
-        report.append(f"  - 异常值: {outlier_count} 行 ({outlier_percent}%)")
-        report.append(f"  - 异常值界限: [{lower_bound:.2f}, {upper_bound:.2f}]")
+            # 邮箱格式问题
+            if key == 'invalid_emails':
+                count = value['无效邮箱数量']
+                percent = value['无效邮箱比例(%)']
+                if count > 0:
+                    report.append(f"- 邮箱列: {count} 个无效格式 ({percent:.2f}%)")
 
+            # JSON格式问题
+            if key == 'invalid_login_history':
+                count = value['无效JSON数量']
+                percent = value['无效JSON比例(%)']
+                if count > 0:
+                    report.append(f"- login_history列: {count} 个无效JSON格式 ({percent:.2f}%)")
+                    if value['无效时间戳数量'] > 0:
+                        report.append(f"  包含 {value['无效时间戳数量']} 个无效时间戳")
+                    if value['无效首次登录日期数量'] > 0:
+                        report.append(f"  包含 {value['无效首次登录日期数量']} 个无效首次登录日期")
 
-    # 分类列统计
-    report.append("\n6. 分类列统计")
-    categorical_cols = df.select_dtypes(include=['object', 'category']).columns
-    for col in categorical_cols:
-        value_counts = df[col].value_counts()
-        unique_count = len(value_counts)
-        report.append(f"\n  {col}:")
-        report.append(f"  - 唯一值数量: {unique_count}")
-        report.append(f"  - 出现频率最高的值 (top 5):")
-        for value, count in value_counts.head(5).items():
-            percent=round((count / len(df) * 100), 2)
-            report.append(f"    - {value}: {count} 行 ({percent}%)")
-
-    # 日期列统计
-    date_columns = ['timestamp', 'registration_date']
-    report.append("\n7. 日期列统计")
-    for col in date_columns:
-        if col in df.columns:
-            dates = pd.to_datetime(df[col], errors='coerce')
-            valid_dates = dates.dropna()
-            invalid_dates = len(df) - len(valid_dates)
-            invalid_percent = round((invalid_dates / len(df) * 100),2)
-
-            report.append(f"\n  {col}:")
-            report.append(f"  - 有效日期: {len(valid_dates)} 行")
-            report.append(f"  - 无效日期: {invalid_dates} 行 ({invalid_percent}%)")
-            if len(valid_dates) > 0:
-                report.append(f"  - 最早日期: {valid_dates.min()}")
-                report.append(f"  - 最晚日期: {valid_dates.max()}")
-
-
-    # JSON数据统计
-    if 'purchase_history' in df.columns:
-        report.append("\n9. purchase_history JSON分析")
-        valid_json = 0
-        invalid_json = 0
-        categories = {}
-        avg_prices = []
-
-        for json_str in df['purchase_history'].dropna():
-            try:
-                if isinstance(json_str, str):
-                    data = json.loads(json_str)
-                    valid_json += 1
-
-                    # 统计类别
-                    if 'category' in data:
-                        category = data['category']
-                        categories[category] = categories.get(category, 0) + 1
-
-                    # 统计平均价格
-                    if 'average_price' in data:
-                        avg_prices.append(data['average_price'])
-            except:
-                invalid_json += 1
-
-        report.append(f"  - 有效JSON: {valid_json} 行")
-        report.append(f"  - 无效JSON: {invalid_json} 行")
-
-        if categories:
-            report.append("  - 类别统计:")
-            for category, count in sorted(categories.items(), key=lambda x: x[1], reverse=True):
-                percent = round((count / valid_json * 100),2)
-                report.append(f"    - {category}: {count} 行 ({percent}%)")
-
-        if avg_prices:
-            report.append(f"  - 平均价格统计:")
-            report.append(f"    - 均值: {np.mean(avg_prices):.2f}")
-            report.append(f"    - 中位数: {np.median(avg_prices):.2f}")
-            report.append(f"    - 最小值: {min(avg_prices):.2f}")
-            report.append(f"    - 最大值: {max(avg_prices):.2f}")
+            if key == 'invalid_purchase_history':
+                count = value['无效JSON数量']
+                percent = value['无效JSON比例(%)']
+                if count > 0:
+                    report.append(f"- purchase_history列: {count} 个无效JSON格式 ({percent:.2f}%)")
+    else:
+        report.append("- 未发现数据一致性问题")
 
     return "\n".join(report)
 
 
-def save_results(df, analysis_results, processing_log, statistics_report, output_dir="./data_quality_results"):
+def save_results(df, analysis_results, processing_log, quality_report, data_deleted,
+                 output_dir="./data_quality_results"):
     """
     保存分析结果和处理后的数据
     """
     # 创建输出目录
     os.makedirs(output_dir, exist_ok=True)
 
-    # 保存处理后的数据
-    df.to_parquet(os.path.join(output_dir, "processed_data.parquet"))
+    # 仅当数据有删除时保存处理后的数据
+    if data_deleted:
+        df.to_parquet(os.path.join(output_dir, "processed_data.parquet"))
+        print(f"处理后的数据已保存到 {os.path.join(output_dir, 'processed_data.parquet')}")
+    else:
+        print("未删除任何数据，不保存处理后的parquet文件")
 
     # 保存分析结果
     with open(os.path.join(output_dir, "analysis_results.json"), 'w', encoding='utf-8') as f:
@@ -451,12 +444,12 @@ def save_results(df, analysis_results, processing_log, statistics_report, output
     with open(os.path.join(output_dir, "processing_log.txt"), 'w', encoding='utf-8') as f:
         f.write("\n".join(processing_log))
 
-    # 保存统计报告
-    with open(os.path.join(output_dir, "statistics_report.txt"), 'w', encoding='utf-8') as f:
-        f.write(statistics_report)
+    # 保存数据质量报告
+    with open(os.path.join(output_dir, "data_quality_report.txt"), 'w', encoding='utf-8') as f:
+        f.write(quality_report)
 
     print(f"结果已保存到 {output_dir} 目录")
-    print("统计报告已保存到 statistics_report.txt 文件")
+    print("数据质量报告已保存到 data_quality_report.txt 文件")
 
 
 def main():
@@ -466,7 +459,7 @@ def main():
 
     try:
         # 输入parquet文件目录
-        directory_path = '/home/pengxiao/virtualenvs/shujuwajue/30G_data'
+        directory_path = '/home/pengxiao/virtualenvs/shujuwajue/30G_new_data'
 
         # 加载parquet文件
         print("正在加载parquet文件...")
@@ -476,17 +469,17 @@ def main():
         print("正在分析原始数据质量...")
         raw_analysis = analyze_data_quality(df)
 
-        # 生成原始数据统计报告
-        print("正在生成原始数据统计报告...")
-        raw_stats_report = generate_statistics_report(df)
+        # 生成原始数据质量报告
+        print("正在生成原始数据质量报告...")
+        raw_quality_report = generate_data_quality_report(raw_analysis)
         print("\n" + "=" * 50)
-        print("原始数据统计结果:")
+        print("原始数据质量评估结果:")
         print("=" * 50)
-        print(raw_stats_report)
+        print(raw_quality_report)
 
         # 进行数据预处理
         print("\n开始数据预处理...")
-        processed_df, processing_log = preprocess_data(df)
+        processed_df, processing_log, data_deleted = preprocess_data(df)
 
         # 打印处理日志
         print("\n" + "=" * 50)
@@ -499,13 +492,13 @@ def main():
         print("\n正在分析处理后的数据质量...")
         processed_analysis = analyze_data_quality(processed_df)
 
-        # 生成处理后数据统计报告
-        print("正在生成处理后数据统计报告...")
-        processed_stats_report = generate_statistics_report(processed_df)
+        # 生成处理后数据质量报告
+        print("正在生成处理后数据质量报告...")
+        processed_quality_report = generate_data_quality_report(processed_analysis)
         print("\n" + "=" * 50)
-        print("处理后数据统计结果:")
+        print("处理后数据质量评估结果:")
         print("=" * 50)
-        print(processed_stats_report)
+        print(processed_quality_report)
 
         # 保存结果
         print("\n正在保存分析结果和处理后的数据...")
@@ -517,36 +510,16 @@ def main():
                 "processed_data_analysis": processed_analysis
             },
             processing_log,
-            raw_stats_report + "\n\n" + processed_stats_report,
+            raw_quality_report + "\n\n\n" + processed_quality_report,
+            data_deleted,
             results_dir
         )
 
-        # 显示处理前后对比
-        print("\n" + "=" * 50)
-        print("数据处理前后对比:")
-        print("=" * 50)
-        print(f"- 原始数据: {raw_analysis['basic_info']['rows']} 行, {raw_analysis['basic_info']['columns']} 列")
-        print(
-            f"- 处理后数据: {processed_analysis['basic_info']['rows']} 行, {processed_analysis['basic_info']['columns']} 列")
-
-        # 显示处理前后缺失值变化
-        print("\n缺失值变化:")
-        raw_missing = sum(raw_analysis['missing_values'].get(col, {}).get('缺失值数量', 0) for col in df.columns)
-        processed_missing = sum(
-            processed_analysis['missing_values'].get(col, {}).get('缺失值数量', 0) for col in processed_df.columns)
-        print(f"- 原始数据缺失值: {raw_missing} 个")
-        print(f"- 处理后数据缺失值: {processed_missing} 个")
-        print(
-            f"- 缺失值减少: {raw_missing - processed_missing} 个 ({100 * (raw_missing - processed_missing) / raw_missing if raw_missing > 0 else 0:.2f}%)")
-
-        # 显示处理前后异常值变化
-        print("\n异常值变化:")
-        raw_outliers = sum(stats['异常值数量'] for col, stats in raw_analysis['outliers'].items())
-        processed_outliers = sum(stats['异常值数量'] for col, stats in processed_analysis['outliers'].items())
-        print(f"- 原始数据异常值: {raw_outliers} 个")
-        print(f"- 处理后数据异常值: {processed_outliers} 个")
-        print(
-            f"- 异常值减少: {raw_outliers - processed_outliers} 个 ({100 * (raw_outliers - processed_outliers) / raw_outliers if raw_outliers > 0 else 0:.2f}%)")
+        # 显示是否保存了处理后的数据
+        if data_deleted:
+            print("\n数据发生了变化，已保存处理后的parquet文件")
+        else:
+            print("\n数据未发生变化，未保存处理后的parquet文件")
 
         print(f"\n结果已保存到: {output_base_dir}")
 
@@ -558,6 +531,7 @@ def main():
 
 if __name__ == "__main__":
     import time
+
     start_time = time.time()
 
     main()

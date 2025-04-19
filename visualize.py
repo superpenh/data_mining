@@ -59,6 +59,7 @@ def load_data_in_parts(data_dir, dtype=None, chunksize=5000):
     import pyarrow as pa
     import pyarrow.parquet as pq
     from pathlib import Path
+    import json
 
     data_path = Path(data_dir)
 
@@ -76,16 +77,16 @@ def load_data_in_parts(data_dir, dtype=None, chunksize=5000):
         dtype = {
             'id': 'int32',
             'user_name': 'category',
-            'chinese_name': 'category',
+            'fullname': 'category',
             'email': 'category',
             'age': 'int8',
             'income': 'int32',
             'gender': 'category',
             'country': 'category',
-            'chinese_address': 'category',
+            'address': 'category',
             'is_active': 'bool',
-            'credit_score': 'int16',
             'phone_number': 'category'
+            # login_history will be handled separately
         }
 
     metadata = {'total_rows': 0, 'files': []}
@@ -121,7 +122,7 @@ def load_data_in_parts(data_dir, dtype=None, chunksize=5000):
                 file_rows = len(df)
                 print(f"File contains {file_rows} rows of data")
 
-                chinese_columns = ['chinese_name', 'chinese_address']
+                chinese_columns = ['fullname', 'address']
                 for col in chinese_columns:
                     if col in df.columns:
                         df[col] = df[col].astype(str)
@@ -135,6 +136,48 @@ def load_data_in_parts(data_dir, dtype=None, chunksize=5000):
                                 df[col] = df[col].astype(type_name)
                             except:
                                 pass
+
+                # Process login_history JSON data if present
+                if 'login_history' in df.columns:
+                    # Extract login_count and avg_session_duration from JSON
+                    login_count_list = []
+                    avg_session_duration_list = []
+
+                    for idx, json_data in enumerate(df['login_history']):
+                        if pd.isna(json_data):
+                            login_count_list.append(np.nan)
+                            avg_session_duration_list.append(np.nan)
+                            continue
+
+                        try:
+                            if isinstance(json_data, str):
+                                data = json.loads(json_data)
+                            elif isinstance(json_data, dict):
+                                data = json_data
+                            else:
+                                login_count_list.append(np.nan)
+                                avg_session_duration_list.append(np.nan)
+                                continue
+
+                            # Extract login_count
+                            if 'login_count' in data:
+                                login_count_list.append(data['login_count'])
+                            else:
+                                login_count_list.append(np.nan)
+
+                            # Extract avg_session_duration
+                            if 'avg_session_duration' in data:
+                                avg_session_duration_list.append(data['avg_session_duration'])
+                            else:
+                                avg_session_duration_list.append(np.nan)
+
+                        except:
+                            login_count_list.append(np.nan)
+                            avg_session_duration_list.append(np.nan)
+
+                    # Add extracted data as new columns
+                    df['login_count'] = login_count_list
+                    df['avg_session_duration'] = avg_session_duration_list
 
                 for start_idx in range(0, file_rows, chunksize):
                     end_idx = min(start_idx + chunksize, file_rows)
@@ -157,15 +200,16 @@ def load_data_in_parts(data_dir, dtype=None, chunksize=5000):
     return data_generator, metadata
 
 
-def generate_specific_visuals(gender_data, income_data, credit_score_data, output_dir='visuals'):
+def generate_specific_visuals(gender_data, income_data, login_data, output_dir='visuals'):
     """
-    Generate the specified three types of visualizations: gender ratio, income distribution, and credit score distribution
+    Generate the specified three types of visualizations:
+    gender ratio, income distribution, and login history data (replacing credit score)
     """
     # Create output directory
     output_path = Path(output_dir)
     output_path.mkdir(exist_ok=True)
 
-    # 1. Gender ratio pie chart
+    # 1. Gender ratio pie chart (unchanged)
     if gender_data is not None and not gender_data.empty:
         plt.figure(figsize=(10, 10))
         plt.pie(gender_data['count'], labels=gender_data['gender'], autopct='%1.1f%%',
@@ -176,7 +220,7 @@ def generate_specific_visuals(gender_data, income_data, credit_score_data, outpu
         plt.close()
         print(f"Generated gender ratio chart: {output_path / 'gender_ratio.png'}")
 
-    # 2. Income distribution histogram
+    # 2. Income distribution histogram (unchanged)
     if income_data is not None and len(income_data) > 0:
         plt.figure(figsize=(12, 8))
         sns.histplot(income_data, bins=30, kde=True, color='#4D85BD')
@@ -197,41 +241,85 @@ def generate_specific_visuals(gender_data, income_data, credit_score_data, outpu
         plt.close()
         print(f"Generated income distribution chart: {output_path / 'income_distribution.png'}")
 
-    # 3. Credit score distribution chart
-    if credit_score_data is not None and len(credit_score_data) > 0:
-        plt.figure(figsize=(12, 8))
+    # 3. Login Data Visualizations (replacing Credit score distribution chart)
+    if login_data is not None and not login_data.empty:
+        # 3.1. Login Count Distribution
+        if 'login_count' in login_data.columns and login_data['login_count'].notna().any():
+            plt.figure(figsize=(12, 8))
 
-        # Use boxplot and histogram to show distribution
-        plt.subplot(2, 1, 1)
-        sns.boxplot(x=credit_score_data, color='#5DA5DA')
-        plt.title('Credit Score Distribution (Boxplot)', fontsize=16)
-        plt.xlabel('Credit Score', fontsize=14)
+            login_count_data = login_data['login_count'].dropna()
 
-        plt.subplot(2, 1, 2)
-        sns.histplot(credit_score_data, bins=25, kde=True, color='#F17CB0')
-        plt.title('Credit Score Distribution (Histogram)', fontsize=16)
-        plt.xlabel('Credit Score', fontsize=14)
-        plt.ylabel('Frequency', fontsize=14)
+            # Boxplot for login count
+            plt.subplot(2, 1, 1)
+            sns.boxplot(x=login_count_data, color='#5DA5DA')
+            plt.title('Login Count Distribution (Boxplot)', fontsize=16)
+            plt.xlabel('Number of Logins', fontsize=14)
 
-        # Add segment descriptions
-        credit_score_array = np.array(credit_score_data)
-        low_credit = np.sum(credit_score_array < 600)
-        medium_credit = np.sum((credit_score_array >= 600) & (credit_score_array < 750))
-        high_credit = np.sum(credit_score_array >= 750)
-        total = len(credit_score_array)
+            # Histogram for login count
+            plt.subplot(2, 1, 2)
+            sns.histplot(login_count_data, bins=25, kde=True, color='#F17CB0')
+            plt.title('Login Count Distribution (Histogram)', fontsize=16)
+            plt.xlabel('Number of Logins', fontsize=14)
+            plt.ylabel('Frequency', fontsize=14)
 
-        credit_stats = (
-            f"Low Credit (<600): {low_credit / total * 100:.1f}%, "
-            f"Medium Credit (600-750): {medium_credit / total * 100:.1f}%, "
-            f"High Credit (>750): {high_credit / total * 100:.1f}%"
-        )
-        plt.figtext(0.5, 0.01, credit_stats, ha='center', fontsize=12,
-                    bbox={"facecolor": "orange", "alpha": 0.2, "pad": 5})
+            # Add segment descriptions
+            login_count_array = np.array(login_count_data)
+            low_activity = np.sum(login_count_array < 30)
+            medium_activity = np.sum((login_count_array >= 30) & (login_count_array < 60))
+            high_activity = np.sum(login_count_array >= 60)
+            total = len(login_count_array)
 
-        plt.tight_layout(rect=[0, 0.03, 1, 0.97])
-        plt.savefig(output_path / 'credit_score_distribution.png', dpi=300)
-        plt.close()
-        print(f"Generated credit score distribution chart: {output_path / 'credit_score_distribution.png'}")
+            login_stats = (
+                f"Low Activity (<30 logins): {low_activity / total * 100:.1f}%, "
+                f"Medium Activity (30-60 logins): {medium_activity / total * 100:.1f}%, "
+                f"High Activity (>60 logins): {high_activity / total * 100:.1f}%"
+            )
+            plt.figtext(0.5, 0.01, login_stats, ha='center', fontsize=12,
+                        bbox={"facecolor": "orange", "alpha": 0.2, "pad": 5})
+
+            plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+            plt.savefig(output_path / 'login_count_distribution.png', dpi=300)
+            plt.close()
+            print(f"Generated login count distribution chart: {output_path / 'login_count_distribution.png'}")
+
+        # 3.2. Average Session Duration Distribution
+        if 'avg_session_duration' in login_data.columns and login_data['avg_session_duration'].notna().any():
+            plt.figure(figsize=(12, 8))
+
+            session_duration_data = login_data['avg_session_duration'].dropna()
+
+            # Boxplot for session duration
+            plt.subplot(2, 1, 1)
+            sns.boxplot(x=session_duration_data, color='#B2912F')
+            plt.title('Average Session Duration Distribution (Boxplot)', fontsize=16)
+            plt.xlabel('Duration (seconds)', fontsize=14)
+
+            # Histogram for session duration
+            plt.subplot(2, 1, 2)
+            sns.histplot(session_duration_data, bins=25, kde=True, color='#60BD68')
+            plt.title('Average Session Duration Distribution (Histogram)', fontsize=16)
+            plt.xlabel('Duration (seconds)', fontsize=14)
+            plt.ylabel('Frequency', fontsize=14)
+
+            # Add segment descriptions
+            duration_array = np.array(session_duration_data)
+            short_session = np.sum(duration_array < 50)
+            medium_session = np.sum((duration_array >= 50) & (duration_array < 70))
+            long_session = np.sum(duration_array >= 70)
+            total = len(duration_array)
+
+            duration_stats = (
+                f"Short Sessions (<50s): {short_session / total * 100:.1f}%, "
+                f"Medium Sessions (50-70s): {medium_session / total * 100:.1f}%, "
+                f"Long Sessions (>70s): {long_session / total * 100:.1f}%"
+            )
+            plt.figtext(0.5, 0.01, duration_stats, ha='center', fontsize=12,
+                        bbox={"facecolor": "lightblue", "alpha": 0.2, "pad": 5})
+
+            plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+            plt.savefig(output_path / 'session_duration_distribution.png', dpi=300)
+            plt.close()
+            print(f"Generated session duration distribution chart: {output_path / 'session_duration_distribution.png'}")
 
     return output_path
 
@@ -248,7 +336,7 @@ def process_data(data_generator, output_dir='results'):
 
     gender_summary = {}
     income_data = []
-    credit_score_data = []
+    login_data_list = []  # Changed from credit_score_data to login_data_list
 
     # Process in batches
     for batch in data_generator():
@@ -260,23 +348,29 @@ def process_data(data_generator, output_dir='results'):
             for gender, count in batch_gender_counts.items():
                 gender_summary[gender] = gender_summary.get(gender, 0) + count
 
-        # For income and credit score, sample data for visualization
+        # For income, sample data for visualization
         # To keep memory manageable, sample at most 1000 rows per batch
         sample_size = min(len(batch), 1000)
         if 'income' in batch.columns:
             income_data.append(batch['income'].sample(sample_size).values)
 
-        if 'credit_score' in batch.columns:
-            credit_score_data.append(batch['credit_score'].sample(sample_size).values)
+        # For login data (replacing credit_score)
+        login_columns = ['login_count', 'avg_session_duration']
+        has_login_data = any(col in batch.columns for col in login_columns)
+
+        if has_login_data:
+            login_sample = batch.sample(min(len(batch), 1000))
+            login_data_cols = [col for col in login_columns if col in login_sample.columns]
+            login_data_list.append(login_sample[login_data_cols])
 
         # Free memory
         del batch
         gc.collect()
 
-    # Create separate dataframes for each metric instead of trying to merge arrays of different lengths
+    # Create separate dataframes for each metric
     gender_data = None
     income_data_array = None
-    credit_score_data_array = None
+    login_data_df = None  # Changed from credit_score_data_array
 
     # Prepare gender data
     if gender_summary:
@@ -289,13 +383,13 @@ def process_data(data_generator, output_dir='results'):
     if income_data:
         income_data_array = np.concatenate(income_data)
 
-    # Prepare credit score data
-    if credit_score_data:
-        credit_score_data_array = np.concatenate(credit_score_data)
+    # Prepare login data (replacing credit_score data)
+    if login_data_list:
+        login_data_df = pd.concat(login_data_list, ignore_index=True)
 
     # Generate visualizations
-    print("Generating the three specified data visualizations...")
-    vis_path = generate_specific_visuals(gender_data, income_data_array, credit_score_data_array,
+    print("Generating the specified data visualizations...")
+    vis_path = generate_specific_visuals(gender_data, income_data_array, login_data_df,
                                          output_dir=str(output_path / 'visuals'))
 
     # Print statistical summary
@@ -316,12 +410,45 @@ def process_data(data_generator, output_dir='results'):
         print(f"  - Minimum Income: {np.min(income_data_array)}")
         print(f"  - Maximum Income: {np.max(income_data_array)}")
 
-    if credit_score_data_array is not None and len(credit_score_data_array) > 0:
-        print("\nCredit Score Statistics:")
-        print(f"  - Average Score: {np.mean(credit_score_data_array):.2f}")
-        print(f"  - Median Score: {np.median(credit_score_data_array):.2f}")
-        print(f"  - Minimum Score: {np.min(credit_score_data_array)}")
-        print(f"  - Maximum Score: {np.max(credit_score_data_array)}")
+    # Login data statistics (replacing credit score statistics)
+    if login_data_df is not None and not login_data_df.empty:
+        print("\nLogin Data Statistics:")
+
+        if 'login_count' in login_data_df.columns and login_data_df['login_count'].notna().any():
+            login_count_data = login_data_df['login_count'].dropna()
+            print("\nLogin Count Statistics:")
+            print(f"  - Average Login Count: {np.mean(login_count_data):.2f}")
+            print(f"  - Median Login Count: {np.median(login_count_data):.2f}")
+            print(f"  - Minimum Login Count: {np.min(login_count_data)}")
+            print(f"  - Maximum Login Count: {np.max(login_count_data)}")
+
+            # Activity level segmentation
+            low_activity = np.sum(login_count_data < 30)
+            medium_activity = np.sum((login_count_data >= 30) & (login_count_data < 60))
+            high_activity = np.sum(login_count_data >= 60)
+            total = len(login_count_data)
+
+            print(f"  - Low Activity Users (<30 logins): {low_activity} ({low_activity / total * 100:.2f}%)")
+            print(f"  - Medium Activity Users (30-60 logins): {medium_activity} ({medium_activity / total * 100:.2f}%)")
+            print(f"  - High Activity Users (>60 logins): {high_activity} ({high_activity / total * 100:.2f}%)")
+
+        if 'avg_session_duration' in login_data_df.columns and login_data_df['avg_session_duration'].notna().any():
+            session_duration_data = login_data_df['avg_session_duration'].dropna()
+            print("\nSession Duration Statistics:")
+            print(f"  - Average Session Duration: {np.mean(session_duration_data):.2f} seconds")
+            print(f"  - Median Session Duration: {np.median(session_duration_data):.2f} seconds")
+            print(f"  - Minimum Session Duration: {np.min(session_duration_data):.2f} seconds")
+            print(f"  - Maximum Session Duration: {np.max(session_duration_data):.2f} seconds")
+
+            # Session duration segmentation
+            short_session = np.sum(session_duration_data < 60)
+            medium_session = np.sum((session_duration_data >= 60) & (session_duration_data < 180))
+            long_session = np.sum(session_duration_data >= 180)
+            total = len(session_duration_data)
+
+            print(f"  - Short Sessions (<60s): {short_session} ({short_session / total * 100:.2f}%)")
+            print(f"  - Medium Sessions (60-180s): {medium_session} ({medium_session / total * 100:.2f}%)")
+            print(f"  - Long Sessions (>180s): {long_session} ({long_session / total * 100:.2f}%)")
 
     return output_path
 
@@ -350,7 +477,7 @@ if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser(description='Data Analysis - Gender Ratio, Income Distribution, and Credit Score Distribution')
-    parser.add_argument('--data-dir', type=str, default='/home/pengxiao/virtualenvs/shujuwajue/data_quality_assessment/results', help='Data directory')
+    parser.add_argument('--data-dir', type=str, default='/home/pengxiao/virtualenvs/shujuwajue/30G_new_data', help='Data directory')
     parser.add_argument('--output-dir', type=str, default='visual_results', help='Output directory')
     parser.add_argument('--chunksize', type=int, default=10000, help='Batch size')
 
